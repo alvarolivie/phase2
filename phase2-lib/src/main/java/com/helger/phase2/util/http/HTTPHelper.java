@@ -267,29 +267,33 @@ public final class HTTPHelper
     }
     else
     {
-      // content-length exists
-      // Read the message body - no Content-Transfer-Encoding handling
-      // Retrieve the message content
-      // FIXME if a value > 2GB comes in, this will fail!!
+      // Content-Length exists
+      // Stream the message body using file-backed storage to support large files
       final long nContentLength = StringParser.parseLong (sContentLength, -1);
-      if (nContentLength < 0 || nContentLength > Integer.MAX_VALUE)
+      if (nContentLength < 0)
       {
-        // Invalid content length (no int or too big)
+        // Invalid content length
         sendSimpleHTTPResponse (aResponseHandler, CHttp.HTTP_LENGTH_REQUIRED);
-        throw new IOException ("Content-Length '" +
-                               sContentLength +
-                               "' is invalid. Only values between 0 and " +
-                               Integer.MAX_VALUE +
-                               " are allowed.");
+        throw new IOException ("Content-Length '" + sContentLength + "' is invalid. Must be >= 0.");
       }
-      aBytePayload = new byte [(int) nContentLength];
 
-      // Closes the original InputStream and that is okay
-      try (final DataInputStream aDataIS = new DataInputStream (aIS))
-      {
-        aDataIS.readFully (aBytePayload);
-      }
-      aPayload = new ByteArrayDataSource (aBytePayload, sReceivedContentType, null);
+      if (LOGGER.isDebugEnabled ())
+        LOGGER.debug ("Streaming Content-Length request of " + nContentLength + " bytes using file-backed storage");
+
+      // Use BoundedInputStream to read exactly nContentLength bytes
+      // and TempSharedFileInputStream for file-backed streaming
+      @WillNotClose
+      final TempSharedFileInputStream aSharedIS = TempSharedFileInputStream.getTempSharedFileInputStream (new BoundedInputStream (aIS,
+                                                                                                                                   nContentLength),
+                                                                                                          aMsg.getMessageID ());
+      aMsg.setTempSharedFileInputStream (aSharedIS);
+
+      // No byte payload in memory - using streaming
+      aBytePayload = null;
+      aPayload = new InputStreamDataSource (aSharedIS,
+                                            aMsg.getAS2From () == null ? "" : aMsg.getAS2From (),
+                                            sReceivedContentType,
+                                            true);
     }
 
     // Dump on demand
