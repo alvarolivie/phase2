@@ -255,8 +255,7 @@ public class AS2ReceiverHandler extends AbstractReceiverHandler
           final X509Certificate aReceiverCert = aCertFactory.getCertificate (aMsg,
                                                                              ECertificatePartnershipType.RECEIVER);
           final PrivateKey aReceiverKey = aCertFactory.getPrivateKey (aReceiverCert);
-          final MimeBodyPart aOldData = aMsg.getData ();
-          final MimeBodyPart aDecryptedData = aCryptoHelper.decrypt (aOldData,
+          final MimeBodyPart aDecryptedData = aCryptoHelper.decrypt (aMsg.getData (),
                                                                      aReceiverCert,
                                                                      aReceiverKey,
                                                                      bForceDecrypt,
@@ -264,19 +263,6 @@ public class AS2ReceiverHandler extends AbstractReceiverHandler
           aMsg.setData (aDecryptedData);
           // Remember that message was encrypted
           aMsg.attrs ().putIn (AS2Message.ATTRIBUTE_RECEIVED_ENCRYPTED, true);
-
-          // Explicitly clear the old encrypted MimeBodyPart to release memory
-          try
-          {
-            if (aOldData != null)
-            {
-              aOldData.setDataHandler (null);
-            }
-          }
-          catch (final Exception ex)
-          {
-            // Ignore - this is just memory optimization
-          }
 
           LOGGER.info ("Successfully decrypted incoming AS2 message" + aMsg.getLoggingText ());
         }
@@ -824,50 +810,19 @@ public class AS2ReceiverHandler extends AbstractReceiverHandler
       }
       finally
       {
-        // Explicitly clear message data to release memory held by JavaMail DataHandler
-        try
-        {
-          // Clear the MimeBodyPart data to release cached content
-          if (aMsg.getData () != null)
-          {
-            // This releases the DataHandler's cached content
-            aMsg.getData ().removeHeader ("Content-Type");
-            // Set to null to break references
-            aMsg.setData (null);
-          }
-          // Clear MIC source if set
-          if (aMsg.getMICSource () != null)
-          {
-            aMsg.setMICSource (null);
-          }
-        }
-        catch (final Exception ex)
-        {
-          // Log but don't fail - this is just cleanup
-          if (LOGGER.isDebugEnabled ())
-            LOGGER.debug ("Exception while clearing message data references", ex);
-        }
-
-        // close and delete the temporary shared stream if it exists
+        // Close and delete the temporary shared stream if it exists
         final TempSharedFileInputStream sis = aMsg.getTempSharedFileInputStream ();
         if (sis != null)
         {
           try
           {
             sis.closeAndDelete ();
-            // Clear the reference
-            aMsg.setTempSharedFileInputStream (null);
           }
           catch (final IOException e)
           {
             LOGGER.error ("Exception while closing TempSharedFileInputStream", e);
           }
         }
-
-        // Suggest garbage collection (not guaranteed, but helps)
-        if (LOGGER.isDebugEnabled ())
-          LOGGER.debug ("Message processing complete, suggesting GC");
-        System.gc ();
       }
     }
   }
