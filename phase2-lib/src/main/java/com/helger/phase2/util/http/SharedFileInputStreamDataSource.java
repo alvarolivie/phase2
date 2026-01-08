@@ -123,8 +123,9 @@ public class SharedFileInputStreamDataSource implements IExtendedDataSource
   {
     // Create a new independent stream from the shared file
     // newStream(0, -1) creates a stream reading from position 0 to EOF
-    // Wrap in BufferedInputStream to support mark/reset for DataHandler caching
-    final InputStream ret = new java.io.BufferedInputStream (m_aSharedFileIS.newStream (0, -1));
+    // Wrap in BufferedInputStream with 64KB buffer to support mark/reset for DataHandler caching
+    // and improve performance for large files
+    final InputStream ret = new java.io.BufferedInputStream (m_aSharedFileIS.newStream (0, -1), 64 * 1024);
 
     if (LOGGER.isDebugEnabled ())
       LOGGER.debug ("Created new buffered stream for '" + m_sName + "' (supports mark/reset)");

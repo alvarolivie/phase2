@@ -440,10 +440,11 @@ public class BCCryptoHelper implements ICryptoHelper
     final RecipientId aRecipientID = new JceKeyTransRecipientId (aX509Cert);
 
     // Parse the MIME body into an SMIME envelope object
+    // Use a buffer size of 64KB for memory-efficient parsing of large files
     RecipientInformation aRecipient = null;
     try
     {
-      final SMIMEEnvelopedParser aEnvelope = new SMIMEEnvelopedParser (aPart);
+      final SMIMEEnvelopedParser aEnvelope = new SMIMEEnvelopedParser (aPart, 64 * 1024);
       aRecipient = aEnvelope.getRecipientInfos ().get (aRecipientID);
     }
     catch (final Exception ex)
