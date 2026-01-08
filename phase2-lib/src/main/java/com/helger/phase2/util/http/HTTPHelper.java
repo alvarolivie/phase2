@@ -55,6 +55,7 @@ import com.helger.base.codec.IdentityCodec;
 import com.helger.base.concurrent.SimpleReadWriteLock;
 import com.helger.base.enforce.ValueEnforcer;
 import com.helger.base.io.nonblocking.NonBlockingByteArrayOutputStream;
+import com.helger.base.io.stream.StreamHelper;
 import com.helger.base.string.StringHelper;
 import com.helger.base.string.StringHex;
 import com.helger.base.string.StringParser;
@@ -258,7 +259,7 @@ public final class HTTPHelper
         throw new IOException ("Content-Length is missing and no Transfer-Encoding is specified");
       }
 
-      // Content-length present, or chunked encoding
+      // Chunked Transfer-Encoding without Content-Length
       aBytePayload = null;
       // Use SharedFileInputStreamDataSource to support multiple reads (MIC calculation, decryption, etc.)
       // aRealIS is a TempSharedFileInputStream at this point (checked by flow above)
@@ -284,10 +285,21 @@ public final class HTTPHelper
 
       // Use BoundedInputStream to read exactly nContentLength bytes
       // and TempSharedFileInputStream for file-backed streaming
+      // Create BoundedInputStream first to ensure proper resource management
+      final BoundedInputStream aBoundedIS = new BoundedInputStream (aIS, nContentLength);
       @WillNotClose
-      final TempSharedFileInputStream aSharedIS = TempSharedFileInputStream.getTempSharedFileInputStream (new BoundedInputStream (aIS,
-                                                                                                                                   nContentLength),
-                                                                                                          aMsg.getMessageID ());
+      final TempSharedFileInputStream aSharedIS;
+      try
+      {
+        // getTempSharedFileInputStream will close aBoundedIS on success
+        aSharedIS = TempSharedFileInputStream.getTempSharedFileInputStream (aBoundedIS, aMsg.getMessageID ());
+      }
+      catch (final IOException ex)
+      {
+        // If getTempSharedFileInputStream fails, ensure BoundedInputStream is closed
+        StreamHelper.close (aBoundedIS);
+        throw ex;
+      }
       aMsg.setTempSharedFileInputStream (aSharedIS);
 
       // No byte payload in memory - using streaming

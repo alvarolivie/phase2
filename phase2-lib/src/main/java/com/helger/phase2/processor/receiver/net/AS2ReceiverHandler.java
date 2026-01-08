@@ -93,6 +93,7 @@ import com.helger.phase2.util.http.AS2HttpRequestDataProviderInputStream;
 import com.helger.phase2.util.http.AS2HttpResponseHandlerSocket;
 import com.helger.phase2.util.http.HTTPHelper;
 import com.helger.phase2.util.http.IAS2HttpResponseHandler;
+import com.helger.phase2.util.http.SharedFileInputStreamDataSource;
 import com.helger.phase2.util.http.TempSharedFileInputStream;
 import com.helger.security.certificate.CertificateHelper;
 
@@ -100,6 +101,7 @@ import jakarta.activation.DataHandler;
 import jakarta.activation.DataSource;
 import jakarta.mail.MessagingException;
 import jakarta.mail.internet.MimeBodyPart;
+import jakarta.mail.util.SharedFileInputStream;
 
 /**
  * The main handler for receiving AS2 messages.
@@ -233,22 +235,23 @@ public class AS2ReceiverHandler extends AbstractReceiverHandler
               LOGGER.debug ("Decrypting" + aMsg.getLoggingText ());
 
           // Recreate MimeBodyPart with fresh DataSource for decryption
-          // After MIC calculation, the DataHandler has cached an EOF stream
-          // So we need to create a fresh MimeBodyPart from the original TempSharedFileInputStream
-          final com.helger.phase2.util.http.TempSharedFileInputStream aTempSharedIS = aMsg.getTempSharedFileInputStream ();
+          // Previous processing steps may have consumed the underlying stream and
+          // caused the DataHandler to cache an EOF stream, so we need to create a
+          // fresh MimeBodyPart from the original TempSharedFileInputStream
+          final TempSharedFileInputStream aTempSharedIS = aMsg.getTempSharedFileInputStream ();
           if (aTempSharedIS != null)
           {
             if (LOGGER.isDebugEnabled ())
               LOGGER.debug ("Recreating MimeBodyPart with fresh stream for decryption");
 
-            final String sReceivedContentType = com.helger.phase2.util.AS2HttpHelper.getCleanContentType (aMsg.getHeader (com.helger.http.CHttpHeader.CONTENT_TYPE));
-            final com.helger.phase2.util.http.SharedFileInputStreamDataSource aFreshDataSource = new com.helger.phase2.util.http.SharedFileInputStreamDataSource (aTempSharedIS,
-                                                                                                                                                                        aMsg.getAS2From () == null ? "" : aMsg.getAS2From (),
-                                                                                                                                                                        sReceivedContentType,
-                                                                                                                                                                        true);
-            final jakarta.mail.internet.MimeBodyPart aFreshPart = new jakarta.mail.internet.MimeBodyPart ();
-            aFreshPart.setDataHandler (new jakarta.activation.DataHandler (aFreshDataSource));
-            aFreshPart.setHeader (com.helger.http.CHttpHeader.CONTENT_TYPE, sReceivedContentType);
+            final String sReceivedContentType = AS2HttpHelper.getCleanContentType (aMsg.getHeader (CHttpHeader.CONTENT_TYPE));
+            final SharedFileInputStreamDataSource aFreshDataSource = new SharedFileInputStreamDataSource (aTempSharedIS,
+                                                                                                           aMsg.getAS2From () == null ? "" : aMsg.getAS2From (),
+                                                                                                           sReceivedContentType,
+                                                                                                           true);
+            final MimeBodyPart aFreshPart = new MimeBodyPart ();
+            aFreshPart.setDataHandler (new DataHandler (aFreshDataSource));
+            aFreshPart.setHeader (CHttpHeader.CONTENT_TYPE, sReceivedContentType);
             aMsg.setData (aFreshPart);
           }
 
@@ -561,18 +564,18 @@ public class AS2ReceiverHandler extends AbstractReceiverHandler
           // Check if DataSource is already file-backed (SharedFileInputStreamDataSource)
           // to avoid loading large files into memory
           final MimeBodyPart aReceivedPart = new MimeBodyPart ();
-          if (aMsgData instanceof com.helger.phase2.util.http.SharedFileInputStreamDataSource)
+          if (aMsgData instanceof SharedFileInputStreamDataSource)
           {
             // DataSource is already file-backed - use it directly to avoid memory overhead
-            final com.helger.phase2.util.http.SharedFileInputStreamDataSource aFileBacked = (com.helger.phase2.util.http.SharedFileInputStreamDataSource) aMsgData;
+            final SharedFileInputStreamDataSource aFileBacked = (SharedFileInputStreamDataSource) aMsgData;
             aReceivedPart.setDataHandler (new DataHandler (aFileBacked));
 
             // Store reference to TempSharedFileInputStream for cleanup
             // The SharedFileInputStream is guaranteed to be a TempSharedFileInputStream when wrapped in SharedFileInputStreamDataSource
-            final jakarta.mail.util.SharedFileInputStream aSharedIS = aFileBacked.getSharedFileInputStream ();
-            if (aSharedIS instanceof com.helger.phase2.util.http.TempSharedFileInputStream)
+            final SharedFileInputStream aSharedIS = aFileBacked.getSharedFileInputStream ();
+            if (aSharedIS instanceof TempSharedFileInputStream)
             {
-              aMsg.setTempSharedFileInputStream ((com.helger.phase2.util.http.TempSharedFileInputStream) aSharedIS);
+              aMsg.setTempSharedFileInputStream ((TempSharedFileInputStream) aSharedIS);
             }
           }
           else

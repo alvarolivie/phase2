@@ -275,14 +275,14 @@ public final class AS2Helper
     {
       // Fallback for unsigned messages - use the message data directly
       aPartToHash = aMsg.getData ();
-      LOGGER.info ("createMICOnReception: No MIC source captured (unsigned message), using message data directly");
+      LOGGER.debug ("createMICOnReception: No MIC source captured (unsigned message), using message data directly");
     }
     else
     {
-      LOGGER.info ("createMICOnReception: Using captured MIC source from signature verification");
+      LOGGER.debug ("createMICOnReception: Using captured MIC source from signature verification");
     }
 
-    LOGGER.info ("createMICOnReception: signingAlgorithm=" + aPartnership.getSigningAlgorithm () + ", contentType=" + aPartToHash.getContentType ());
+    LOGGER.debug ("createMICOnReception: signingAlgorithm=" + aPartnership.getSigningAlgorithm () + ", contentType=" + aPartToHash.getContentType ());
 
     return getCryptoHelper ().calculateMIC (aPartToHash, eSigningAlgorithm, bIncludeHeadersInMIC);
   }

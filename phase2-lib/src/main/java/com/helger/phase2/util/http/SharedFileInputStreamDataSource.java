@@ -41,6 +41,7 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.helger.base.enforce.ValueEnforcer;
 import com.helger.mail.datasource.IExtendedDataSource;
 
 import jakarta.mail.util.SharedFileInputStream;
@@ -88,16 +89,9 @@ public class SharedFileInputStreamDataSource implements IExtendedDataSource
                                           @NonNull final String sContentType,
                                           final boolean bReadMultiple)
   {
-    if (aSharedFileIS == null)
-      throw new NullPointerException ("SharedFileIS must not be null");
-    if (sName == null)
-      throw new NullPointerException ("Name must not be null");
-    if (sContentType == null)
-      throw new NullPointerException ("ContentType must not be null");
-
-    m_aSharedFileIS = aSharedFileIS;
-    m_sName = sName;
-    m_sContentType = sContentType;
+    m_aSharedFileIS = ValueEnforcer.notNull (aSharedFileIS, "SharedFileIS");
+    m_sName = ValueEnforcer.notNull (sName, "Name");
+    m_sContentType = ValueEnforcer.notNull (sContentType, "ContentType");
     m_bReadMultiple = bReadMultiple;
 
     if (LOGGER.isDebugEnabled ())

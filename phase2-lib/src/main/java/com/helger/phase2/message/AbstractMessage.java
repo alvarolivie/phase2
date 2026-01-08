@@ -154,11 +154,13 @@ public abstract class AbstractMessage extends AbstractBaseMessage implements IMe
   }
 
   @Nullable
+  @Override
   public final MimeBodyPart getMICSource ()
   {
     return m_aMICSource;
   }
 
+  @Override
   public final void setMICSource (@Nullable final MimeBodyPart aMICSource)
   {
     m_aMICSource = aMICSource;
