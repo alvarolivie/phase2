@@ -440,10 +440,11 @@ public class BCCryptoHelper implements ICryptoHelper
     final RecipientId aRecipientID = new JceKeyTransRecipientId (aX509Cert);
 
     // Parse the MIME body into an SMIME envelope object
+    // Use a buffer size of 64KB for memory-efficient parsing of large files
     RecipientInformation aRecipient = null;
     try
     {
-      final SMIMEEnvelopedParser aEnvelope = new SMIMEEnvelopedParser (aPart);
+      final SMIMEEnvelopedParser aEnvelope = new SMIMEEnvelopedParser (aPart, 64 * 1024);
       aRecipient = aEnvelope.getRecipientInfos ().get (aRecipientID);
     }
     catch (final Exception ex)
@@ -697,6 +698,7 @@ public class BCCryptoHelper implements ICryptoHelper
                               final boolean bUseCertificateInBodyPart,
                               final boolean bForceVerifySigned,
                               @Nullable final Consumer <X509Certificate> aEffectiveCertificateConsumer,
+                              @Nullable final Consumer <MimeBodyPart> aMICSourceConsumer,
                               @NonNull final AS2ResourceHelper aResHelper) throws GeneralSecurityException,
                                                                            IOException,
                                                                            MessagingException,
@@ -754,6 +756,13 @@ public class BCCryptoHelper implements ICryptoHelper
         throw new SignatureException ("Verification failed for SignerInfo " + aSignerInfo);
     }
 
-    return aSignedParser.getContent ();
+    final MimeBodyPart aSignedContent = aSignedParser.getContent ();
+
+    // Invoke callback with the signed content for MIC calculation
+    // This mirrors the sender's callback pattern where MIC is calculated on pre-signature content
+    if (aMICSourceConsumer != null)
+      aMICSourceConsumer.accept (aSignedContent);
+
+    return aSignedContent;
   }
 }

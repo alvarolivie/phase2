@@ -260,10 +260,12 @@ public final class HTTPHelper
 
       // Content-length present, or chunked encoding
       aBytePayload = null;
-      aPayload = new InputStreamDataSource (aRealIS,
-                                            aMsg.getAS2From () == null ? "" : aMsg.getAS2From (),
-                                            sReceivedContentType,
-                                            true);
+      // Use SharedFileInputStreamDataSource to support multiple reads (MIC calculation, decryption, etc.)
+      // aRealIS is a TempSharedFileInputStream at this point (checked by flow above)
+      aPayload = new SharedFileInputStreamDataSource ((TempSharedFileInputStream) aRealIS,
+                                                      aMsg.getAS2From () == null ? "" : aMsg.getAS2From (),
+                                                      sReceivedContentType,
+                                                      true);
     }
     else
     {
@@ -290,10 +292,11 @@ public final class HTTPHelper
 
       // No byte payload in memory - using streaming
       aBytePayload = null;
-      aPayload = new InputStreamDataSource (aSharedIS,
-                                            aMsg.getAS2From () == null ? "" : aMsg.getAS2From (),
-                                            sReceivedContentType,
-                                            true);
+      // Use SharedFileInputStreamDataSource to support multiple reads (MIC calculation, decryption, etc.)
+      aPayload = new SharedFileInputStreamDataSource (aSharedIS,
+                                                      aMsg.getAS2From () == null ? "" : aMsg.getAS2From (),
+                                                      sReceivedContentType,
+                                                      true);
     }
 
     // Dump on demand
