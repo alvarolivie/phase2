@@ -232,6 +232,26 @@ public class AS2ReceiverHandler extends AbstractReceiverHandler
             if (LOGGER.isDebugEnabled ())
               LOGGER.debug ("Decrypting" + aMsg.getLoggingText ());
 
+          // Recreate MimeBodyPart with fresh DataSource for decryption
+          // After MIC calculation, the DataHandler has cached an EOF stream
+          // So we need to create a fresh MimeBodyPart from the original TempSharedFileInputStream
+          final com.helger.phase2.util.http.TempSharedFileInputStream aTempSharedIS = aMsg.getTempSharedFileInputStream ();
+          if (aTempSharedIS != null)
+          {
+            if (LOGGER.isDebugEnabled ())
+              LOGGER.debug ("Recreating MimeBodyPart with fresh stream for decryption");
+
+            final String sReceivedContentType = com.helger.phase2.util.AS2HttpHelper.getCleanContentType (aMsg.getHeader (com.helger.http.CHttpHeader.CONTENT_TYPE));
+            final com.helger.phase2.util.http.SharedFileInputStreamDataSource aFreshDataSource = new com.helger.phase2.util.http.SharedFileInputStreamDataSource (aTempSharedIS,
+                                                                                                                                                                        aMsg.getAS2From () == null ? "" : aMsg.getAS2From (),
+                                                                                                                                                                        sReceivedContentType,
+                                                                                                                                                                        true);
+            final jakarta.mail.internet.MimeBodyPart aFreshPart = new jakarta.mail.internet.MimeBodyPart ();
+            aFreshPart.setDataHandler (new jakarta.activation.DataHandler (aFreshDataSource));
+            aFreshPart.setHeader (com.helger.http.CHttpHeader.CONTENT_TYPE, sReceivedContentType);
+            aMsg.setData (aFreshPart);
+          }
+
           final X509Certificate aReceiverCert = aCertFactory.getCertificate (aMsg,
                                                                              ECertificatePartnershipType.RECEIVER);
           final PrivateKey aReceiverKey = aCertFactory.getPrivateKey (aReceiverCert);

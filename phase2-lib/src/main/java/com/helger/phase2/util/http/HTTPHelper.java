@@ -260,10 +260,12 @@ public final class HTTPHelper
 
       // Content-length present, or chunked encoding
       aBytePayload = null;
-      aPayload = new InputStreamDataSource (aRealIS,
-                                            aMsg.getAS2From () == null ? "" : aMsg.getAS2From (),
-                                            sReceivedContentType,
-                                            true);
+      // Use SharedFileInputStreamDataSource to support multiple reads (MIC calculation, decryption, etc.)
+      // aRealIS is a TempSharedFileInputStream at this point (checked by flow above)
+      aPayload = new SharedFileInputStreamDataSource ((TempSharedFileInputStream) aRealIS,
+                                                      aMsg.getAS2From () == null ? "" : aMsg.getAS2From (),
+                                                      sReceivedContentType,
+                                                      true);
     }
     else
     {
@@ -282,14 +284,25 @@ public final class HTTPHelper
                                Integer.MAX_VALUE +
                                " are allowed.");
       }
-      aBytePayload = new byte [(int) nContentLength];
 
-      // Closes the original InputStream and that is okay
-      try (final DataInputStream aDataIS = new DataInputStream (aIS))
-      {
-        aDataIS.readFully (aBytePayload);
-      }
-      aPayload = new ByteArrayDataSource (aBytePayload, sReceivedContentType, null);
+      if (LOGGER.isDebugEnabled ())
+        LOGGER.debug ("Streaming Content-Length request of " + nContentLength + " bytes using file-backed storage");
+
+      // Use BoundedInputStream to read exactly nContentLength bytes
+      // and TempSharedFileInputStream for file-backed streaming
+      @WillNotClose
+      final TempSharedFileInputStream aSharedIS = TempSharedFileInputStream.getTempSharedFileInputStream (new BoundedInputStream (aIS,
+                                                                                                                                   nContentLength),
+                                                                                                          aMsg.getMessageID ());
+      aMsg.setTempSharedFileInputStream (aSharedIS);
+
+      // No byte payload in memory - using streaming
+      aBytePayload = null;
+      // Use SharedFileInputStreamDataSource to support multiple reads (MIC calculation, decryption, etc.)
+      aPayload = new SharedFileInputStreamDataSource (aSharedIS,
+                                                      aMsg.getAS2From () == null ? "" : aMsg.getAS2From (),
+                                                      sReceivedContentType,
+                                                      true);
     }
 
     // Dump on demand
