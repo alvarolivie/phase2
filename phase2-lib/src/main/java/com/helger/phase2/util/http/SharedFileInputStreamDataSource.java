@@ -117,15 +117,25 @@ public class SharedFileInputStreamDataSource implements IExtendedDataSource
   {
     // Create a new independent stream from the shared file
     // newStream(0, -1) creates a stream reading from position 0 to EOF
-    // Return SharedFileInputStream directly so MimeMultipart.parse() can detect it
-    // as a SharedInputStream and avoid loading entire content into ByteArrayOutputStream
-    // SharedFileInputStream is already internally buffered, no need to wrap it
-    final InputStream ret = m_aSharedFileIS.newStream (0, -1);
+    final InputStream aNewStream = m_aSharedFileIS.newStream (0, -1);
 
+    // Use different approaches based on the read pattern:
+    // - Multi-read (decryption): Use larger 1MB buffer for handling very large encrypted files (800MB+ decrypted)
+    //   The larger buffer helps BouncyCastle's ASN.1 parser process large encrypted streams without EOF issues
+    // - Single-read (verification): Return raw SharedFileInputStream so MimeMultipart.parse() can detect it
+    //   and use streaming instead of loading entire content into ByteArrayOutputStream
+    if (m_bReadMultiple)
+    {
+      // Decryption path: buffer with 1MB buffer to handle large encrypted files
+      if (LOGGER.isDebugEnabled ())
+        LOGGER.debug ("Created buffered stream (1MB buffer) for '" + m_sName + "' (multi-read mode for decryption)");
+      return new java.io.BufferedInputStream (aNewStream, 1024 * 1024);
+    }
+
+    // Verification path: return raw for memory-efficient streaming
     if (LOGGER.isDebugEnabled ())
-      LOGGER.debug ("Created new shared stream for '" + m_sName + "' (already buffered, supports mark/reset)");
-
-    return ret;
+      LOGGER.debug ("Created shared stream for '" + m_sName + "' (single-read mode for verification)");
+    return aNewStream;
   }
 
   @Override
