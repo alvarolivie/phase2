@@ -365,7 +365,18 @@ public class BCCryptoHelper implements ICryptoHelper
          final OutputStream aEncodedOS = AS2IOHelper.getContentTransferEncodingAwareOutputStream (aDigestOS,
                                                                                                   sMICEncoding))
     {
-      aPart.getDataHandler ().writeTo (aEncodedOS);
+      // Stream with fixed buffer to avoid JavaMail's pipe buffering which can accumulate 600MB+
+      // For large files (820MB+), writeTo() uses pipe buffering that grows with file size
+      // Direct streaming with 64KB buffer keeps memory constant at ~50MB like Go implementation
+      try (final InputStream is = aPart.getDataHandler ().getDataSource ().getInputStream ())
+      {
+        final byte [] buffer = new byte [65536]; // 64KB buffer
+        int bytesRead;
+        while ((bytesRead = is.read (buffer)) != -1)
+        {
+          aEncodedOS.write (buffer, 0, bytesRead);
+        }
+      }
     }
 
     // Build result digest array
