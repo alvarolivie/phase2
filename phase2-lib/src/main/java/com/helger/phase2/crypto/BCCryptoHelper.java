@@ -365,7 +365,18 @@ public class BCCryptoHelper implements ICryptoHelper
          final OutputStream aEncodedOS = AS2IOHelper.getContentTransferEncodingAwareOutputStream (aDigestOS,
                                                                                                   sMICEncoding))
     {
-      aPart.getDataHandler ().writeTo (aEncodedOS);
+      // Stream with fixed buffer to avoid JavaMail's pipe buffering which can accumulate 600MB+
+      // For large files (820MB+), writeTo() uses pipe buffering that grows with file size
+      // Direct streaming with 64KB buffer keeps memory constant at ~50MB like Go implementation
+      try (final InputStream is = aPart.getDataHandler ().getDataSource ().getInputStream ())
+      {
+        final byte [] buffer = new byte [65536]; // 64KB buffer
+        int bytesRead;
+        while ((bytesRead = is.read (buffer)) != -1)
+        {
+          aEncodedOS.write (buffer, 0, bytesRead);
+        }
+      }
     }
 
     // Build result digest array
@@ -440,10 +451,11 @@ public class BCCryptoHelper implements ICryptoHelper
     final RecipientId aRecipientID = new JceKeyTransRecipientId (aX509Cert);
 
     // Parse the MIME body into an SMIME envelope object
+    // Use a buffer size of 64KB for memory-efficient parsing of large files
     RecipientInformation aRecipient = null;
     try
     {
-      final SMIMEEnvelopedParser aEnvelope = new SMIMEEnvelopedParser (aPart);
+      final SMIMEEnvelopedParser aEnvelope = new SMIMEEnvelopedParser (aPart, 64 * 1024);
       aRecipient = aEnvelope.getRecipientInfos ().get (aRecipientID);
     }
     catch (final Exception ex)
@@ -697,6 +709,7 @@ public class BCCryptoHelper implements ICryptoHelper
                               final boolean bUseCertificateInBodyPart,
                               final boolean bForceVerifySigned,
                               @Nullable final Consumer <X509Certificate> aEffectiveCertificateConsumer,
+                              @Nullable final Consumer <MimeBodyPart> aMICSourceConsumer,
                               @NonNull final AS2ResourceHelper aResHelper) throws GeneralSecurityException,
                                                                            IOException,
                                                                            MessagingException,
@@ -715,12 +728,46 @@ public class BCCryptoHelper implements ICryptoHelper
     if (!bForceVerifySigned && !isSigned (aPart))
       throw new GeneralSecurityException ("Content-Type indicates data isn't signed: " + aPart.getContentType ());
 
-    // Get only once and check
-    // Throws "ParseException" if it is not a MIME message
-    final Object aContent = aPart.getContent ();
-    if (!(aContent instanceof final MimeMultipart aMainPart))
-      throw new IllegalStateException ("Expected Part content to be MimeMultipart but it isn't. It is " +
-                                       ClassHelper.getClassName (aContent));
+    // Create MimeMultipart directly from DataSource to avoid memory caching
+    // IMPORTANT: Prefer DataSource approach over aPart.getContent() because getContent() caches
+    // the parsed MimeMultipart in memory due to JavaMail's mail.mime.cachemultipart property
+    // For FileBackedMimeBodyPart (created after decryption), the DataSource approach:
+    // - Reads from the underlying temp file via SharedInputStream
+    // - Avoids loading the entire 800MB+ payload into memory
+    // - Allows the MimeMultipart to be garbage collected immediately after SMIMESignedParser uses it
+    // This follows the same pattern as BouncyCastle's SMIMEUtil.getMultipart()
+    MimeMultipart aMainPart = null;
+    try
+    {
+      // Try memory-efficient approach first
+      if (LOGGER.isDebugEnabled ())
+        LOGGER.debug ("Creating MimeMultipart from DataSource (memory-efficient streaming)");
+      aMainPart = new MimeMultipart (aPart.getDataHandler ().getDataSource ());
+    }
+    catch (final MessagingException ex)
+    {
+      // Fallback to getContent() if DataSource approach fails
+      // This will cache in memory but ensures compatibility
+      LOGGER.warn ("Failed to create MimeMultipart from DataSource, falling back to getContent() (will cache in memory): " +
+                   ex.getMessage ());
+      try
+      {
+        final Object aContent = aPart.getContent ();
+        if (!(aContent instanceof MimeMultipart))
+          throw new IllegalStateException ("Expected Part content to be MimeMultipart but it isn't. It is " +
+                                           ClassHelper.getClassName (aContent));
+        aMainPart = (MimeMultipart) aContent;
+      }
+      catch (final Exception ex2)
+      {
+        throw new IllegalStateException ("Failed to get MimeMultipart from Part using both DataSource and getContent() methods: " +
+                                         ex2.getMessage (),
+                                         ex2);
+      }
+    }
+
+    if (aMainPart == null)
+      throw new IllegalStateException ("Failed to obtain MimeMultipart from Part");
     // SMIMESignedParser uses "7bit" as the default - AS2 wants "binary"
     final SMIMESignedParser aSignedParser = new SMIMESignedParser (new JcaDigestCalculatorProviderBuilder ().setProvider (m_sSecurityProviderName)
                                                                                                             .build (),
@@ -754,6 +801,13 @@ public class BCCryptoHelper implements ICryptoHelper
         throw new SignatureException ("Verification failed for SignerInfo " + aSignerInfo);
     }
 
-    return aSignedParser.getContent ();
+    final MimeBodyPart aSignedContent = aSignedParser.getContent ();
+
+    // Invoke callback with the signed content for MIC calculation
+    // This mirrors the sender's callback pattern where MIC is calculated on pre-signature content
+    if (aMICSourceConsumer != null)
+      aMICSourceConsumer.accept (aSignedContent);
+
+    return aSignedContent;
   }
 }

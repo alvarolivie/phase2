@@ -60,6 +60,7 @@ public abstract class AbstractMessage extends AbstractBaseMessage implements IMe
   private static final Logger LOGGER = LoggerFactory.getLogger (AbstractMessage.class);
 
   private MimeBodyPart m_aData;
+  private MimeBodyPart m_aMICSource;
   private IMessageMDN m_aMDN;
   private TempSharedFileInputStream m_aTempSharedFileInputStream;
 
@@ -150,6 +151,19 @@ public abstract class AbstractMessage extends AbstractBaseMessage implements IMe
         setContentDisposition (null);
       }
     }
+  }
+
+  @Nullable
+  @Override
+  public final MimeBodyPart getMICSource ()
+  {
+    return m_aMICSource;
+  }
+
+  @Override
+  public final void setMICSource (@Nullable final MimeBodyPart aMICSource)
+  {
+    m_aMICSource = aMICSource;
   }
 
   @Nullable

@@ -33,6 +33,7 @@
 package com.helger.phase2.processor.receiver.net;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.Socket;
 import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
@@ -92,6 +93,7 @@ import com.helger.phase2.util.http.AS2HttpRequestDataProviderInputStream;
 import com.helger.phase2.util.http.AS2HttpResponseHandlerSocket;
 import com.helger.phase2.util.http.HTTPHelper;
 import com.helger.phase2.util.http.IAS2HttpResponseHandler;
+import com.helger.phase2.util.http.SharedFileInputStreamDataSource;
 import com.helger.phase2.util.http.TempSharedFileInputStream;
 import com.helger.security.certificate.CertificateHelper;
 
@@ -99,6 +101,7 @@ import jakarta.activation.DataHandler;
 import jakarta.activation.DataSource;
 import jakarta.mail.MessagingException;
 import jakarta.mail.internet.MimeBodyPart;
+import jakarta.mail.util.SharedFileInputStream;
 
 /**
  * The main handler for receiving AS2 messages.
@@ -231,6 +234,27 @@ public class AS2ReceiverHandler extends AbstractReceiverHandler
             if (LOGGER.isDebugEnabled ())
               LOGGER.debug ("Decrypting" + aMsg.getLoggingText ());
 
+          // Recreate MimeBodyPart with fresh DataSource for decryption
+          // Previous processing steps may have consumed the underlying stream and
+          // caused the DataHandler to cache an EOF stream, so we need to create a
+          // fresh MimeBodyPart from the original TempSharedFileInputStream
+          final TempSharedFileInputStream aTempSharedIS = aMsg.getTempSharedFileInputStream ();
+          if (aTempSharedIS != null)
+          {
+            if (LOGGER.isDebugEnabled ())
+              LOGGER.debug ("Recreating MimeBodyPart with fresh stream for decryption");
+
+            final String sReceivedContentType = AS2HttpHelper.getCleanContentType (aMsg.getHeader (CHttpHeader.CONTENT_TYPE));
+            final SharedFileInputStreamDataSource aFreshDataSource = new SharedFileInputStreamDataSource (aTempSharedIS,
+                                                                                                           aMsg.getAS2From () == null ? "" : aMsg.getAS2From (),
+                                                                                                           sReceivedContentType,
+                                                                                                           true);
+            final MimeBodyPart aFreshPart = new MimeBodyPart ();
+            aFreshPart.setDataHandler (new DataHandler (aFreshDataSource));
+            aFreshPart.setHeader (CHttpHeader.CONTENT_TYPE, sReceivedContentType);
+            aMsg.setData (aFreshPart);
+          }
+
           final X509Certificate aReceiverCert = aCertFactory.getCertificate (aMsg,
                                                                              ECertificatePartnershipType.RECEIVER);
           final PrivateKey aReceiverKey = aCertFactory.getPrivateKey (aReceiverCert);
@@ -302,17 +326,23 @@ public class AS2ReceiverHandler extends AbstractReceiverHandler
           }
 
           final Wrapper <X509Certificate> aCertHolder = new Wrapper <> ();
+          final Wrapper <MimeBodyPart> aMICSourceHolder = new Wrapper <> ();
           final MimeBodyPart aVerifiedData = aCryptoHelper.verify (aMsg.getData (),
                                                                    aSenderCert,
                                                                    bUseCertificateInBodyPart,
                                                                    bForceVerify,
                                                                    aCertHolder::set,
+                                                                   aMICSourceHolder::set,
                                                                    aResHelper);
           final Consumer <X509Certificate> aExternalConsumer = getVerificationCertificateConsumer ();
           if (aExternalConsumer != null)
             aExternalConsumer.accept (aCertHolder.get ());
 
           aMsg.setData (aVerifiedData);
+
+          // Store the MIC source for later calculation (mirrors sender's callback pattern)
+          if (aMICSourceHolder.isSet ())
+            aMsg.setMICSource (aMICSourceHolder.get ());
 
           // Remember that message was signed and verified
           aMsg.attrs ().putIn (AS2Message.ATTRIBUTE_RECEIVED_SIGNED, true);
@@ -531,11 +561,47 @@ public class AS2ReceiverHandler extends AbstractReceiverHandler
           // Put received data in a MIME body part
           final String sReceivedContentType = AS2HttpHelper.getCleanContentType (aMsg.getHeader (CHttpHeader.CONTENT_TYPE));
 
+          // Check if DataSource is already file-backed (SharedFileInputStreamDataSource)
+          // to avoid loading large files into memory
           final MimeBodyPart aReceivedPart = new MimeBodyPart ();
-          aReceivedPart.setDataHandler (new DataHandler (aMsgData));
+          if (aMsgData instanceof SharedFileInputStreamDataSource)
+          {
+            // DataSource is already file-backed - use it directly to avoid memory overhead
+            final SharedFileInputStreamDataSource aFileBacked = (SharedFileInputStreamDataSource) aMsgData;
+            aReceivedPart.setDataHandler (new DataHandler (aFileBacked));
+
+            // Store reference to TempSharedFileInputStream for cleanup
+            // The SharedFileInputStream is guaranteed to be a TempSharedFileInputStream when wrapped in SharedFileInputStreamDataSource
+            final SharedFileInputStream aSharedIS = aFileBacked.getSharedFileInputStream ();
+            if (aSharedIS instanceof TempSharedFileInputStream)
+            {
+              aMsg.setTempSharedFileInputStream ((TempSharedFileInputStream) aSharedIS);
+            }
+          }
+          else
+          {
+            // DataSource is not file-backed (e.g., for small messages or legacy path)
+            // Read into memory for MIC calculation
+            final byte [] aRawBytes;
+            try (final InputStream aIS = aMsgData.getInputStream ())
+            {
+              aRawBytes = StreamHelper.getAllBytes (aIS);
+            }
+
+            // Create MimeBodyPart with raw bytes using ByteArrayDataSource
+            // This ensures MIC calculation uses exact bytes as received, without JavaMail modifications
+            final ByteArrayDataSource aByteArrayDS = new ByteArrayDataSource (aRawBytes, sReceivedContentType, null);
+            aReceivedPart.setDataHandler (new DataHandler (aByteArrayDS));
+          }
 
           // Header must be set AFTER the DataHandler!
           aReceivedPart.setHeader (CHttpHeader.CONTENT_TYPE, sReceivedContentType);
+
+          // Copy Content-Disposition from HTTP headers if present (important for MIC calculation on unsigned messages)
+          final String sContentDisposition = aMsg.getHeader (CHttpHeader.CONTENT_DISPOSITION);
+          if (sContentDisposition != null)
+            aReceivedPart.setHeader (CHttpHeader.CONTENT_DISPOSITION, sContentDisposition);
+
           aMsg.setData (aReceivedPart);
         }
         catch (final Exception ex)
@@ -565,17 +631,6 @@ public class AS2ReceiverHandler extends AbstractReceiverHandler
                                               () -> AbstractActiveNetModule.DISP_PARTNERSHIP_NOT_FOUND);
         }
 
-        // Calculate MIC before decrypt and decompress (see #140)
-        try
-        {
-          aIncomingMIC = AS2Helper.createMICOnReception (aMsg);
-        }
-        catch (final Exception ex)
-        {
-          // Ignore error
-          throw WrappedAS2Exception.wrap (ex);
-        }
-
         // Per RFC5402 compression is always before encryption but can be before
         // or after signing of message but only in one place
         final ICryptoHelper aCryptoHelper = AS2Helper.getCryptoHelper ();
@@ -595,6 +650,26 @@ public class AS2ReceiverHandler extends AbstractReceiverHandler
 
         // Verify may fail, if our certificate is expired
         verify (aMsg, aResHelper);
+
+        // For unsigned messages, set MIC source to current data (after decrypt/decompress)
+        // For signed messages, this was already set by the verify() callback
+        if (aMsg.getMICSource () == null)
+        {
+          aMsg.setMICSource (aMsg.getData ());
+        }
+
+        // Calculate MIC AFTER decryption and signature verification (RFC 4130)
+        // The MIC must be calculated on the same data that the sender calculated it on,
+        // which is the decrypted signed content, not the encrypted envelope
+        try
+        {
+          aIncomingMIC = AS2Helper.createMICOnReception (aMsg);
+        }
+        catch (final Exception ex)
+        {
+          // Ignore error
+          throw WrappedAS2Exception.wrap (ex);
+        }
 
         if (aCryptoHelper.isCompressed (aMsg.getContentType ()))
         {
@@ -738,7 +813,7 @@ public class AS2ReceiverHandler extends AbstractReceiverHandler
       }
       finally
       {
-        // close and delete the temporary shared stream if it exists
+        // Close and delete the temporary shared stream if it exists
         final TempSharedFileInputStream sis = aMsg.getTempSharedFileInputStream ();
         if (sis != null)
         {
